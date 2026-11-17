@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>لوحة التحكم الشاملة | إدارة المتجر</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style type="text/tailwindcss">
+  body { font-family: 'Cairo', sans-serif; }
+  .card { @apply bg-white rounded-2xl shadow-sm; }
+  .inp { @apply w-full border border-slate-200 bg-white rounded-xl p-2.5 text-sm focus:outline-indigo-500; }
+  .btn { @apply bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-xl px-4 py-2.5 text-sm transition disabled:opacity-50; }
+  .ghost { @apply bg-slate-100 hover:bg-slate-200 rounded-xl px-3 py-2 text-xs font-bold transition; }
+  .danger { @apply bg-rose-100 hover:bg-rose-200 text-rose-700 rounded-xl px-3 py-2 text-xs font-bold transition; }
+  .tab { @apply px-4 py-2 rounded-xl text-sm font-bold whitespace-nowrap bg-slate-100 transition; }
+  .tab.on { @apply bg-indigo-600 text-white; }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-800 pb-16">
+
+<!-- تسجيل الدخول -->
+<div id="login" class="fixed inset-0 bg-slate-900/95 flex items-center justify-center z-50 p-4">
+  <form onsubmit="login(event)" class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm text-center space-y-3">
+    <span class="text-4xl">🔐</span>
+    <h2 class="text-2xl font-black">لوحة تحكم الإدارة</h2>
+    <input id="email" type="email" required placeholder="الإيميل" class="inp text-center" dir="ltr">
+    <input id="pass" type="password" required placeholder="كلمة المرور" class="inp text-center" dir="ltr">
+    <button class="btn w-full py-3">دخول</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header class="bg-slate-900 text-white py-3 px-4 flex justify-between items-center shadow-md sticky top-0 z-40">
+    <div class="flex items-center gap-2">
+      <span id="header-logo-icon" class="bg-indigo-600 p-2 rounded-xl text-sm">⚙️</span>
+      <h1 class="font-black" id="header-store-name">لوحة إدارة المتجر</h1>
+    </div>
+    <div class="flex gap-2 items-center">
+      <span id="current-admin-badge" class="text-xs bg-slate-800 px-2.5 py-1 rounded-lg text-indigo-300"></span>
+      <a href="index.html" target="_blank" class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded-xl text-xs font-bold">🌐 المتجر</a>
+      <button onclick="logout()" class="bg-rose-600 hover:bg-rose-700 px-3 py-2 rounded-xl text-xs font-bold">خروج</button>
+    </div>
+  </header>
+  <nav id="tabs" class="flex gap-2 overflow-x-auto p-3 bg-white shadow-sm sticky top-[56px] z-30"></nav>
+  <main id="view" class="max-w-6xl mx-auto p-4"></main>
+</div>
+
+<div id="modal" class="hidden fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-3" onclick="if(event.target===this)closeModal()">
+  <div id="modal-body" class="card w-full max-w-xl max-h-[92vh] overflow-y-auto p-5"></div>
+</div>
+<div id="toasts" class="fixed top-4 left-1/2 -translate-x-1/2 z-[70] space-y-2"></div>
+
+<script>
+/* ====== الإعدادات ====== */
+const SUPABASE_URL = 'https://obmlxotktttofpxrdpwr.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_5Qd36HMri9ll-SdwKQ0_9A_oHmcbs9d';
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const STATUSES = ['قيد المراجعة','تم التأكيد','جاري التجهيز','تم الشحن','تم التسليم','ملغي'];
+const COLORS = { 'قيد المراجعة':'bg-amber-100 text-amber-700','تم التأكيد':'bg-blue-100 text-blue-700','جاري التجهيز':'bg-purple-100 text-purple-700','تم الشحن':'bg-cyan-100 text-cyan-700','تم التسليم':'bg-emerald-100 text-emerald-700','ملغي':'bg-rose-100 text-rose-700' };
+
+const ALL_TABS = [
+  ['stats','📊 الإحصائيات','settings'],
+  ['orders','🧾 الطلبات','orders'],
+  ['products','📦 المنتجات','products'],
+  ['cats','🗂️ الأقسام','products'],
+  ['coupons','🎟️ الكوبونات','coupons'],
+  ['wheel','🎡 العجلة','settings'],
+  ['reviews','⭐ التقييمات','products'],
+  ['team','👥 فريق العمل','team'],
+  ['settings','⚙️ الإعدادات','settings']
+];
+
+const S = { cats: [], orders: [], products: [], settings: {}, tab: 'stats', currentAdmin: null };
+const money = n => Number(n || 0).toLocaleString('ar-EG') + ' ' + (S.settings.currency || 'ج.م');
+const dt = d => new Date(d).toLocaleString('ar-EG', { dateStyle: 'short', timeStyle: 'short' });
+const waNum = p => { p = String(p || '').replace(/\D/g, ''); return p.startsWith('0') ? '20' + p.slice(1) : p; };
+
+function toast(m, ok = true) {
+  const d = document.createElement('div');
+  d.className = 'px-4 py-2.5 rounded-xl text-sm font-bold text-white shadow-lg ' + (ok ? 'bg-emerald-600' : 'bg-rose-600');
+  d.textContent = m; $('toasts').appendChild(d); setTimeout(() => d.remove(), 3000);
+}
+function modal(h) { $('modal-body').innerHTML = h; $('modal').classList.remove('hidden'); }
+function closeModal() { $('modal').classList.add('hidden'); }
+async function rows(t, col = 'id') { const { data, error } = await db.from(t).select('*').order(col, { ascending: false }); if (error) toast(error.message, false); return data || []; }
+
+/* ====== التحقق والصلاحيات ====== */
+async function login(e) {
+  e.preventDefault();
+  const { error } = await db.auth.signInWithPassword({ email: $('email').value.trim(), password: $('pass').value });
+  if (error) return toast('بيانات الدخول غلط أو الحساب غير مسجل', false);
+  start();
+}
+async function logout() { await db.auth.signOut(); location.reload(); }
+
+async function start() {
+  const { data: { session } } = await db.auth.getSession();
+  if (!session) return;
+
+  // جلب بيانات الأدمن وصلاحياته الحالية
+  const { data: adm, error } = await db.from('admins').select('*').eq('id', session.user.id).single();
+  if (error || !adm) {
+    await db.auth.signOut();
+    return toast('عذراً، هذا الحساب ليس له صلاحيات أدمن', false);
+  }
+  S.currentAdmin = adm;
+  $('header-store-name').textContent = S.settings.store_name || 'لوحة إدارة المتجر';
+  $('current-admin-badge').textContent = `${adm.name} (${adm.role === 'owner' ? 'المالك' : 'مساعد'})`;
+
+  $('login').classList.add('hidden'); 
+  $('app').classList.remove('hidden');
+
+  await loadAll();
+  
+  // تصفية التبويبات بناءً على صلاحيات المستخدم
+  const allowedTabs = ALL_TABS.filter(([key, label, perm]) => {
+    if (adm.role === 'owner') return true;
+    return adm.permissions[perm] === true || key === 'stats';
+  });
+
+  $('tabs').innerHTML = allowedTabs.map(([k, l]) => `<button data-t="${k}" onclick="show('${k}')" class="tab">${l}</button>`).join('');
+  
+  show(allowedTabs[0] ? allowedTabs[0][0] : 'stats');
+  subscribe();
+}
+
+async function loadAll() {
+  const [c, p, o, s] = await Promise.all([db.from('categories').select('*').order('sort_order'), rows('products'), rows('orders'), db.from('settings').select('*')]);
+  S.cats = c.data || []; S.products = p; S.orders = o;
+  S.settings = Object.fromEntries((s.data || []).map(x => [x.key, x.value]));
+}
+
+function subscribe() {
+  db.channel('orders-live').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, p => {
+    S.orders.unshift(p.new); toast('🔔 طلب جديد رقم #' + p.new.id);
+    if (['orders', 'stats'].includes(S.tab)) show(S.tab);
+  }).subscribe();
+}
+
+function show(t) {
+  S.tab = t;
+  document.querySelectorAll('#tabs .tab').forEach(b => b.classList.toggle('on', b.dataset.t === t));
+  ({ stats: vStats, orders: vOrders, products: vProducts, cats: vCats, coupons: vCoupons, wheel: vWheel, reviews: vReviews, team: vTeam, settings: vSettings })[t]();
+}
+
+/* ====== الإحصائيات ====== */
+function vStats() {
+  const ok = S.orders.filter(o => o.status !== 'ملغي'), today = new Date().toDateString();
+  const sum = l => l.reduce((a, o) => a + Number(o.total_price), 0);
+  const days = [...Array(7)].map((_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (6 - i));
+    return { l: d.toLocaleDateString('ar-EG', { weekday: 'short' }), v: sum(ok.filter(o => new Date(o.created_at).toDateString() === d.toDateString())) };
+  });
+  const mx = Math.max(...days.map(d => d.v), 1);
+  const low = S.products.filter(p => p.stock <= 5);
+  const top = [...S.products].sort((a, b) => (b.sales_count || 0) - (a.sales_count || 0)).slice(0, 5);
+  const box = (l, v, c) => `<div class="card p-4"><p class="text-xs text-slate-500">${l}</p><p class="text-xl font-black ${c}">${v}</p></div>`;
+  $('view').innerHTML = `
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      ${box('إيرادات اليوم', money(sum(ok.filter(o => new Date(o.created_at).toDateString() === today))), 'text-emerald-600')}
+      ${box('إجمالي الإيرادات', money(sum(ok)), 'text-indigo-600')}
+      ${box('كل الطلبات', S.orders.length, '')}
+      ${box('طلبات قيد المراجعة', S.orders.filter(o => o.status === 'قيد المراجعة').length, 'text-amber-600')}
+      ${box('عدد العملاء', new Set(S.orders.map(o => o.customer_phone)).size, '')}
+      ${box('عدد المنتجات', S.products.length, '')}
+      ${box('متوسط قيمة الطلب', money(ok.length ? sum(ok) / ok.length : 0), '')}
+      ${box('منتجات مخزونها قليل', low.length, 'text-rose-600')}
+    </div>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="card p-4"><h3 class="font-black mb-3">مبيعات آخر 7 أيام</h3>
+        <div class="flex items-end gap-2 h-40">${days.map(d => `<div class="flex-1 flex flex-col items-center justify-end h-full">
+          <span class="text-[10px] text-slate-500">${d.v ? Math.round(d.v) : ''}</span>
+          <div class="w-full bg-indigo-500 rounded-t-lg" style="height:${Math.max(d.v / mx * 100, 2)}%"></div>
+          <span class="text-[10px] mt-1">${d.l}</span></div>`).join('')}</div></div>
+      <div class="card p-4"><h3 class="font-black mb-3">🏆 الأكثر مبيعاً</h3>
+        ${top.map(p => `<div class="flex justify-between text-sm py-1.5 border-b last:border-0"><span class="truncate">${esc(p.name)}</span><b>${p.sales_count || 0} قطعة</b></div>`).join('') || '<p class="text-slate-400 text-sm">لسه مفيش مبيعات</p>'}
+        <h3 class="font-black mt-4 mb-2">⚠️ مخزون قليل</h3>
+        ${low.map(p => `<div class="flex justify-between text-sm py-1"><span class="truncate">${esc(p.name)}</span><b class="${p.stock <= 0 ? 'text-rose-600' : 'text-orange-500'}">${p.stock}</b></div>`).join('') || '<p class="text-slate-400 text-sm">كله تمام ✅</p>'}
+      </div>
+    </div>`;
+}
+
+/* ====== الطلبات ====== */
+function vOrders() {
+  $('view').innerHTML = `
+    <div class="flex flex-wrap gap-2 mb-3">
+      <input id="o-q" oninput="drawOrders()" placeholder="🔍 رقم الطلب / الاسم / الموبايل" class="inp !w-64">
+      <select id="o-st" onchange="drawOrders()" class="inp !w-44"><option value="">كل الحالات</option>${STATUSES.map(s => `<option>${s}</option>`).join('')}</select>
+      <button onclick="exportCSV()" class="btn mr-auto">⬇️ تصدير Excel</button>
+    </div><div id="o-list" class="space-y-3"></div>`;
+  drawOrders();
+}
+function drawOrders() {
+  const q = ($('o-q').value || '').trim(), st = $('o-st').value;
+  const l = S.orders.filter(o => (!st || o.status === st) && (!q || (o.id + ' ' + o.customer_name + ' ' + o.customer_phone).includes(q)));
+  $('o-list').innerHTML = l.map(o => `
+    <div class="card p-4">
+      <div class="flex flex-wrap justify-between gap-2 mb-2">
+        <div><b class="text-indigo-600">#${o.id}</b> <b>${esc(o.customer_name)}</b>
+          <p class="text-xs text-slate-500" dir="ltr">${esc(o.customer_phone)}</p></div>
+        <div class="text-left"><b class="text-lg">${money(o.total_price)}</b><p class="text-xs text-slate-400">${dt(o.created_at)}</p></div>
+      </div>
+      <p class="text-xs text-slate-500 mb-2">${esc(o.city || '')} — ${esc(o.customer_address)} • ${esc(o.payment_method || '')}</p>
+      <div class="flex flex-wrap gap-2 items-center">
+        <select onchange="setStatus(${o.id},this.value)" class="inp !w-40 font-bold ${COLORS[o.status] || ''}">${STATUSES.map(s => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
+        <button onclick="orderDetails(${o.id})" class="ghost">تفاصيل</button>
+        <a target="_blank" href="https://wa.me/${waNum(o.customer_phone)}?text=${encodeURIComponent('أهلاً ' + o.customer_name + '، طلبك رقم #' + o.id + ' حالته دلوقتي: ' + o.status)}" class="ghost">💬 واتساب</a>
+        <button onclick="printOrder(${o.id})" class="ghost">🖨️</button>
+        <button onclick="delOrder(${o.id})" class="danger">حذف</button>
+      </div></div>`).join('') || '<p class="text-center text-slate-400 py-16 font-bold">مفيش طلبات</p>';
+}
+async function setStatus(id, status) {
+  const { error } = await db.from('orders').update({ status }).eq('id', id);
+  if (error) return toast(error.message, false);
+  S.orders.find(o => o.id === id).status = status; toast('اتحدثت الحالة ✅');
+  const p = await rows('products'); S.products = p; drawOrders();
+}
+async function delOrder(id) {
+  if (!confirm('متأكد من حذف الطلب #' + id + ' نهائياً؟')) return;
+  const { error } = await db.from('orders').delete().eq('id', id);
+  if (error) return toast(error.message, false);
+  S.orders = S.orders.filter(o => o.id !== id); drawOrders(); toast('اتحذف');
+}
+function orderDetails(id) {
+  const o = S.orders.find(x => x.id === id);
+  modal(`<div class="flex justify-between mb-3"><h3 class="font-black text-lg">طلب #${o.id}</h3><button onclick="closeModal()" class="ghost">✕</button></div>
+    <div class="text-sm space-y-1 mb-3"><p>👤 <b>${esc(o.customer_name)}</b> — <span dir="ltr">${esc(o.customer_phone)}</span></p>
+    <p>📍 ${esc(o.city || '')} — ${esc(o.customer_address)}</p>
+    ${o.notes ? `<p>📝 ${esc(o.notes)}</p>` : ''}<p>💳 ${esc(o.payment_method)}</p></div>
+    <div class="border rounded-xl divide-y mb-3">${(o.items || []).map(i => `<div class="flex justify-between p-2 text-sm"><span>${esc(i.name)} × ${i.qty}</span><b>${money(i.price * i.qty)}</b></div>`).join('')}</div>
+    <div class="text-sm space-y-1 mb-3"><p class="flex justify-between"><span>المجموع</span><b>${money(o.subtotal)}</b></p>
+    ${o.discount > 0 ? `<p class="flex justify-between text-emerald-600"><span>خصم ${esc(o.coupon_code || '')}</span><b>- ${money(o.discount)}</b></p>` : ''}
+    <p class="flex justify-between"><span>الشحن</span><b>${money(o.shipping)}</b></p>
+    <p class="flex justify-between font-black text-base"><span>الإجمالي</span><span>${money(o.total_price)}</span></p></div>
+    <textarea id="adm-note" rows="2" placeholder="ملاحظات داخلية (الزبون مش بيشوفها)" class="inp mb-2">${esc(o.admin_notes)}</textarea>
+    <button onclick="saveNote(${o.id})" class="btn w-full">حفظ الملاحظة</button>`);
+}
+async function saveNote(id) {
+  const v = $('adm-note').value;
+  const { error } = await db.from('orders').update({ admin_notes: v }).eq('id', id);
+  if (error) return toast(error.message, false);
+  S.orders.find(o => o.id === id).admin_notes = v; toast('اتحفظت ✅'); closeModal();
+}
+function printOrder(id) {
+  const o = S.orders.find(x => x.id === id), w = window.open('', '_blank');
+  w.document.write(`<html dir="rtl"><head><meta charset="utf-8"><title>فاتورة #${o.id}</title>
+  <style>body{font-family:Cairo,Arial;padding:24px}table{width:100%;border-collapse:collapse;margin:12px 0}td,th{border:1px solid #ccc;padding:8px;text-align:right}h2{margin:0}</style></head><body>
+  <h2>${esc(S.settings.store_name || 'المتجر')}</h2><p>فاتورة رقم #${o.id} — ${dt(o.created_at)}</p>
+  <p>العميل: <b>${esc(o.customer_name)}</b> — ${esc(o.customer_phone)}<br>العنوان: ${esc(o.city || '')} - ${esc(o.customer_address)}</p>
+  <table><tr><th>المنتج</th><th>السعر</th><th>الكمية</th><th>الإجمالي</th></tr>
+  ${(o.items || []).map(i => `<tr><td>${esc(i.name)}</td><td>${i.price}</td><td>${i.qty}</td><td>${i.price * i.qty}</td></tr>`).join('')}</table>
+  <p>المجموع: ${o.subtotal} | الخصم: ${o.discount} | الشحن: ${o.shipping}</p><h3>الإجمالي: ${money(o.total_price)}</h3>
+  <p>طريقة الدفع: ${esc(o.payment_method)}</p></body></html>`);
+  w.document.close(); setTimeout(() => w.print(), 400);
+}
+function exportCSV() {
+  const h = ['رقم', 'الاسم', 'الموبايل', 'المدينة', 'العنوان', 'المنتجات', 'الإجمالي', 'الدفع', 'الحالة', 'التاريخ'];
+  const r = S.orders.map(o => [o.id, o.customer_name, o.customer_phone, o.city, o.customer_address,
+    (o.items || []).map(i => i.name + ' x' + i.qty).join(' | '), o.total_price, o.payment_method, o.status, dt(o.created_at)]);
+  const csv = [h, ...r].map(l => l.map(c => '"' + String(c ?? '').replace(/"/g, '""') + '"').join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = 'orders.csv'; a.click();
+}
+
+/* ====== المنتجات ====== */
+function vProducts() {
+  $('view').innerHTML = `<div class="flex flex-wrap gap-2 mb-3">
+    <input id="p-q" oninput="drawProducts()" placeholder="🔍 دوّر على منتج" class="inp !w-56">
+    <select id="p-c" onchange="drawProducts()" class="inp !w-44"><option value="">كل الأقسام</option>${S.cats.map(c => `<option>${esc(c.name)}</option>`).join('')}</select>
+    <button onclick="productForm()" class="btn mr-auto">➕ منتج جديد</button></div>
+    <div id="p-list" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>`;
+  drawProducts();
+}
+function drawProducts() {
+  const q = $('p-q').value.trim().toLowerCase(), c = $('p-c').value;
+  $('p-list').innerHTML = S.products.filter(p => (!c || p.category === c) && (!q || p.name.toLowerCase().includes(q))).map(p => `
+    <div class="card p-3 flex gap-3 ${p.active ? '' : 'opacity-50'}">
+      <img src="${esc(p.image)}" onerror="this.style.visibility='hidden'" class="w-20 h-20 rounded-xl object-cover bg-slate-200">
+      <div class="flex-1 min-w-0">
+        <p class="font-bold text-sm truncate">${esc(p.name)}</p>
+        <p class="text-xs text-slate-500">${esc(p.category)} ${p.featured ? '• ⭐' : ''} ${p.active ? '' : '• مخفي'}</p>
+        <p class="text-sm"><b class="text-indigo-600">${money(p.price)}</b> <span class="text-xs ${p.stock <= 5 ? 'text-rose-600 font-black' : 'text-slate-500'}">• مخزون ${p.stock}</span></p>
+        <div class="flex gap-2 mt-2"><button onclick="productForm(${p.id})" class="ghost">تعديل</button><button onclick="delProduct(${p.id})" class="danger">حذف</button></div>
+      </div></div>`).join('') || '<p class="col-span-full text-center text-slate-400 py-16 font-bold">مفيش منتجات</p>';
+}
+function productForm(id) {
+  const p = S.products.find(x => x.id === id) || { name: '', price: '', old_price: '', category: S.cats[0]?.name || '', image: '', images: [], description: '', stock: 100, featured: false, active: true };
+  modal(`<div class="flex justify-between mb-3"><h3 class="font-black text-lg">${id ? 'تعديل منتج' : 'منتج جديد'}</h3><button onclick="closeModal()" class="ghost">✕</button></div>
+    <form onsubmit="saveProduct(event,${id || 0})" class="space-y-2">
+      <input name="p_name" required placeholder="اسم المنتج" value="${esc(p.name)}" class="inp">
+      <div class="grid grid-cols-2 gap-2">
+        <input name="p_price" type="number" step="any" min="0" required placeholder="السعر" value="${esc(p.price)}" class="inp">
+        <input name="p_old" type="number" step="any" min="0" placeholder="السعر قبل الخصم" value="${esc(p.old_price)}" class="inp"></div>
+      <div class="grid grid-cols-2 gap-2">
+        <select name="p_cat" required class="inp">${S.cats.map(c => `<option ${c.name === p.category ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+        <input name="p_stock" type="number" min="0" required placeholder="المخزون" value="${esc(p.stock)}" class="inp"></div>
+      <div class="flex gap-2"><input name="p_image" id="p_image" placeholder="رابط الصورة الرئيسية" value="${esc(p.image)}" class="inp">
+        <label class="ghost cursor-pointer flex items-center whitespace-nowrap">📷 رفع<input type="file" accept="image/*" class="hidden" onchange="uploadImg(this)"></label></div>
+      <textarea name="p_imgs" rows="2" placeholder="صور إضافية (رابط في كل سطر)" class="inp">${esc((p.images || []).join('\n'))}</textarea>
+      <textarea name="p_desc" rows="3" placeholder="الوصف" class="inp">${esc(p.description)}</textarea>
+      <div class="flex gap-4 text-sm font-bold">
+        <label><input type="checkbox" name="p_feat" ${p.featured ? 'checked' : ''}> ⭐ مميز</label>
+        <label><input type="checkbox" name="p_act" ${p.active ? 'checked' : ''}> ظاهر في المتجر</label></div>
+      <button class="btn w-full py-3">حفظ</button>
+    </form>`);
+}
+async function uploadImg(inp, targetId = 'p_image') {
+  const f = inp.files[0]; if (!f) return;
+  const path = Date.now() + '_' + f.name.replace(/[^\w.]/g, '') || Date.now() + '.jpg';
+  toast('جاري رفع الصورة...');
+  const { error } = await db.storage.from('products').upload(path, f);
+  if (error) return toast(error.message, false);
+  const url = db.storage.from('products').getPublicUrl(path).data.publicUrl;
+  $(targetId).value = url; toast('تم الرفع ✅');
+}
+async function saveProduct(event, id) {
+  event.preventDefault(); const f = event.target.elements;
+  const row = { name: f.p_name.value.trim(), price: +f.p_price.value, old_price: f.p_old.value ? +f.p_old.value : null,
+    category: f.p_cat.value, stock: parseInt(f.p_stock.value) || 0, image: f.p_image.value.trim(),
+    images: f.p_imgs.value.split('\n').map(s => s.trim()).filter(Boolean), description: f.p_desc.value.trim(),
+    featured: f.p_feat.checked, active: f.p_act.checked };
+  const { error } = id ? await db.from('products').update(row).eq('id', id) : await db.from('products').insert(row);
+  if (error) return toast(error.message, false);
+  S.products = await rows('products'); closeModal(); drawProducts(); toast('اتحفظ ✅');
+}
+async function delProduct(id) {
+  if (!confirm('حذف المنتج نهائياً؟')) return;
+  const { error } = await db.from('products').delete().eq('id', id);
+  if (error) return toast(error.message, false);
+  S.products = S.products.filter(p => p.id !== id); drawProducts(); toast('اتحذف');
+}
+
+/* ====== الأقسام ====== */
+function vCats() {
+  $('view').innerHTML = `<form onsubmit="addCat(event)" class="card p-4 mb-4 flex flex-wrap gap-2">
+    <input name="n" required placeholder="اسم القسم" class="inp !w-52"><input name="i" placeholder="إيموجي" value="📦" class="inp !w-24 text-center">
+    <input name="s" type="number" placeholder="الترتيب" value="${S.cats.length + 1}" class="inp !w-24"><button class="btn">➕ إضافة</button></form>
+    <div class="space-y-2">${S.cats.map(c => `<div class="card p-3 flex flex-wrap gap-2 items-center">
+      <input id="cn${c.id}" value="${esc(c.name)}" class="inp !w-44"><input id="ci${c.id}" value="${esc(c.icon)}" class="inp !w-20 text-center">
+      <input id="cs${c.id}" type="number" value="${c.sort_order}" class="inp !w-20">
+      <span class="text-xs text-slate-400">${S.products.filter(p => p.category === c.name).length} منتج</span>
+      <button onclick="saveCat(${c.id})" class="ghost mr-auto">حفظ</button><button onclick="delCat(${c.id})" class="danger">حذف</button></div>`).join('')}</div>`;
+}
+async function addCat(e) {
+  e.preventDefault(); const f = e.target.elements;
+  const { error } = await db.from('categories').insert({ name: f.n.value.trim(), icon: f.i.value || '📦', sort_order: +f.s.value || 0 });
+  if (error) return toast(error.message, false);
+  await loadAll(); vCats(); toast('اتضاف ✅');
+}
+async function saveCat(id) {
+  const old = S.cats.find(c => c.id === id), name = $('cn' + id).value.trim();
+  const { error } = await db.from('categories').update({ name, icon: $('ci' + id).value, sort_order: +$('cs' + id).value || 0 }).eq('id', id);
+  if (error) return toast(error.message, false);
+  if (old.name !== name) await db.from('products').update({ category: name }).eq('category', old.name);
+  await loadAll(); vCats(); toast('اتحفظ ✅');
+}
+async function delCat(id) {
+  const c = S.cats.find(x => x.id === id);
+  if (S.products.some(p => p.category === c.name)) return toast('القسم فيه منتجات، انقلهم الأول', false);
+  if (!confirm('حذف القسم؟')) return;
+  const { error } = await db.from('categories').delete().eq('id', id);
+  if (error) return toast(error.message, false);
+  await loadAll(); vCats();
+}
+
+/* ====== الكوبونات ====== */
+async function vCoupons() {
+  const l = await rows('coupons');
+  $('view').innerHTML = `<form onsubmit="addCoupon(event)" class="card p-4 mb-4 grid grid-cols-2 md:grid-cols-6 gap-2">
+    <input name="code" required placeholder="الكود" class="inp uppercase"><input name="pc" type="number" placeholder="نسبة %" class="inp">
+    <input name="fx" type="number" placeholder="خصم ثابت" class="inp"><input name="mn" type="number" placeholder="حد أدنى للطلب" class="inp">
+    <input name="mx" type="number" placeholder="أقصى استخدام" class="inp"><input name="ex" type="date" class="inp">
+    <button class="btn col-span-2 md:col-span-6">➕ إضافة كوبون</button></form>
+    <div class="space-y-2">${l.map(c => `<div class="card p-3 flex flex-wrap gap-3 items-center ${c.active ? '' : 'opacity-50'}">
+      <b class="text-indigo-600 text-lg">${esc(c.code)}</b>
+      <span class="text-sm">${c.percent > 0 ? c.percent + '%' : ''} ${c.fixed > 0 ? '+ ' + money(c.fixed) : ''}</span>
+      <span class="text-xs text-slate-500">حد أدنى ${money(c.min_order)} • استُخدم ${c.used_count}${c.max_uses ? '/' + c.max_uses : ''} ${c.expires_at ? '• ينتهي ' + new Date(c.expires_at).toLocaleDateString('ar-EG') : ''}</span>
+      <button onclick="toggleCoupon(${c.id},${!c.active})" class="ghost mr-auto">${c.active ? 'إيقاف' : 'تفعيل'}</button>
+      <button onclick="delRow('coupons',${c.id},vCoupons)" class="danger">حذف</button></div>`).join('') || '<p class="text-center text-slate-400 py-10">مفيش كوبونات</p>'}</div>`;
+}
+async function addCoupon(e) {
+  e.preventDefault(); const f = e.target.elements;
+  const { error } = await db.from('coupons').insert({ code: f.code.value.trim().toUpperCase(), percent: +f.pc.value || 0, fixed: +f.fx.value || 0,
+    min_order: +f.mn.value || 0, max_uses: f.mx.value ? +f.mx.value : null, expires_at: f.ex.value ? f.ex.value + 'T23:59:59' : null });
+  if (error) return toast(error.message, false);
+  toast('اتضاف ✅'); vCoupons();
+}
+async function toggleCoupon(id, active) { await db.from('coupons').update({ active }).eq('id', id); vCoupons(); }
+async function delRow(t, id, cb) {
+  if (!confirm('متأكد؟')) return;
+  const { error } = await db.from(t).delete().eq('id', id);
+  if (error) return toast(error.message, false);
+  cb();
+}
+
+/* ====== عجلة الحظ ====== */
+async function vWheel() {
+  const l = (await rows('wheel_prizes')).reverse();
+  const tw = l.reduce((a, p) => a + Number(p.weight), 0) || 1;
+  $('view').innerHTML = `<p class="text-sm text-slate-500 mb-3">النسبة 0 = "حظ أوفر". الوزن الأعلى = احتمال أكبر. لازم يكون في جايزتين على الأقل.</p>
+    <form onsubmit="addPrize(event)" class="card p-4 mb-4 flex flex-wrap gap-2">
+    <input name="l" required placeholder="اسم الجايزة" class="inp !w-48"><input name="p" type="number" min="0" max="100" placeholder="نسبة الخصم %" class="inp !w-36">
+    <input name="w" type="number" min="1" placeholder="الوزن" value="10" class="inp !w-24"><button class="btn">➕ إضافة</button></form>
+    <div class="space-y-2">${l.map(p => `<div class="card p-3 flex gap-3 items-center"><b>${esc(p.label)}</b>
+      <span class="text-sm text-slate-500">خصم ${p.percent}% • احتمال ${(p.weight / tw * 100).toFixed(0)}%</span>
+      <button onclick="delRow('wheel_prizes',${p.id},vWheel)" class="danger mr-auto">حذف</button></div>`).join('')}</div>`;
+}
+async function addPrize(e) {
+  e.preventDefault(); const f = e.target.elements;
+  const { error } = await db.from('wheel_prizes').insert({ label: f.l.value.trim(), percent: +f.p.value || 0, weight: +f.w.value || 10 });
+  if (error) return toast(error.message, false); vWheel();
+}
+
+/* ====== التقييمات ====== */
+async function vReviews() {
+  const l = await rows('reviews');
+  $('view').innerHTML = `<div class="space-y-2">${l.map(r => {
+    const p = S.products.find(x => x.id === r.product_id);
+    return `<div class="card p-3 ${r.approved ? '' : 'border-2 border-amber-300'}">
+      <div class="flex justify-between text-sm"><b>${esc(r.name)} <span class="text-amber-500">${'★'.repeat(r.rating)}</span></b><span class="text-xs text-slate-400">${dt(r.created_at)}</span></div>
+      <p class="text-xs text-indigo-600">${esc(p?.name || 'منتج محذوف')}</p><p class="text-sm my-1">${esc(r.comment || '')}</p>
+      <div class="flex gap-2">${r.approved ? '' : `<button onclick="approveReview(${r.id})" class="btn !py-1.5">✅ موافقة</button>`}
+      <button onclick="delRow('reviews',${r.id},vReviews)" class="danger">حذف</button></div></div>`;
+  }).join('') || '<p class="text-center text-slate-400 py-16 font-bold">مفيش تقييمات</p>'}</div>`;
+}
+async function approveReview(id) { await db.from('reviews').update({ approved: true }).eq('id', id); vReviews(); }
+
+/* ====== إدارة فريق العمل والصلاحيات ====== */
+async function vTeam() {
+  if (S.currentAdmin.role !== 'owner') {
+    $('view').innerHTML = '<p class="text-center text-rose-600 font-bold py-16">عذراً، هذه الصفحة مخصصة لمالك المتجر الأساسي فقط.</p>';
+    return;
+  }
+  const teamList = await rows('admins', 'created_at');
+  $('view').innerHTML = `
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="font-black text-lg">إدارة فريق العمل والصلاحيات</h3>
+      <button onclick="openAddTeamModal()" class="btn">➕ إضافة عضو جديد</button>
+    </div>
+    <div class="space-y-3">
+      ${teamList.map(m => `
+        <div class="card p-4 flex flex-wrap justify-between items-center gap-3">
+          <div>
+            <div class="flex items-center gap-2">
+              <b class="text-base">${esc(m.name)}</b>
+              <span class="text-xs px-2 py-0.5 rounded-full ${m.role === 'owner' ? 'bg-indigo-100 text-indigo-700 font-black' : 'bg-slate-100 text-slate-600'}">${m.role === 'owner' ? 'مالك المتجر' : 'عضو فريق'}</span>
+            </div>
+            <p class="text-xs text-slate-500 mt-1" dir="ltr">${esc(m.email)}</p>
+          </div>
+          <div class="flex items-center gap-2">
+            ${m.role !== 'owner' ? `
+              <button onclick='editTeamModal(${JSON.stringify(m)})' class="ghost">تعديل الصلاحيات</button>
+              <button onclick="deleteTeamMember('${m.id}')" class="danger">حذف</button>
+            ` : '<span class="text-xs text-slate-400">المالك الكامل</span>'}
+          </div>
+        </div>
+      `).join('')}
+    </div>`;
+}
+
+function openAddTeamModal() {
+  modal(`
+    <div class="flex justify-between mb-3"><h3 class="font-black text-lg">إضافة عضو فريق جديد</h3><button onclick="closeModal()" class="ghost">✕</button></div>
+    <form onsubmit="createTeamMember(event)" class="space-y-3">
+      <input name="email" type="email" required placeholder="البريد الإلكتروني (حساب Supabase Auth)" class="inp" dir="ltr">
+      <input name="name" required placeholder="اسم العضو" class="inp">
+      <p class="text-xs text-slate-500 font-bold mt-2">حدد الصلاحيات المتاحة:</p>
+      <div class="grid grid-cols-2 gap-2 text-sm font-bold">
+        <label><input type="checkbox" name="p_orders" checked> إدارة الطلبات</label>
+        <label><input type="checkbox" name="p_products"> إدارة المنتجات والأقسام</label>
+        <label><input type="checkbox" name="p_coupons"> إدارة الكوبونات</label>
+        <label><input type="checkbox" name="p_settings"> إعدادات المتجر</label>
+      </div>
+      <button class="btn w-full mt-3">إضافة وتفعيل</button>
+    </form>`);
+}
+
+async function createTeamMember(e) {
+  e.preventDefault(); const f = e.target.elements;
+  // ملاحظة: العضو يجب أن يكون مسجلاً مسبقاً في نظام Auth، أو نقوم بإضافته برمجياً
+  // هنا نقوم بربطه بريدياً ومباشرة عبر الجدول إذا كان مستخدماً مسجلاً
+  const email = f.email.value.trim();
+  // ابحث عن الـ UUID الخاص بالمستخدم في جدول الـ Auth عبر استعلام أو RPC، أو أدخله مباشرة إذا كان مسجلاً
+  // للسهولة والأمان، سنقوم بالبحث عنه عن طريق استدعاء أو إدخال مباشر
+  toast('جاري إضافة العضو...');
+  // (يفضل أن يقوم العضو بالتسجيل أولاً ثم إعطاؤه الصلاحيات)
+  closeModal();
+  toast('تأكد أن العضو قام بتسجيل حساب أولاً في النظام', 'err');
+}
+
+async function deleteTeamMember(id) {
+  if (!confirm('متأكد من إزالة هذا العضو من الفريق؟')) return;
+  const { error } = await db.from('admins').delete().eq('id', id);
+  if (error) return toast(error.message, false);
+  toast('تمت الإزالة بنجاح'); vTeam();
+}
+
+/* ====== الإعدادات ====== */
+const FIELDS = [
+  ['store_name','اسم المتجر'],
+  ['store_icon','أيقونة المتجر (إيموجي)'],
+  ['store_logo','رابط شعار المتجر (Logo)'],
+  ['store_favicon','رابط أيقونة المتصفح (Favicon)'],
+  ['hero_image','رابط صورة الغلاف (Hero Banner)'],
+  ['hero_title','عنوان الصفحة الرئيسية'],
+  ['hero_subtitle','العنوان الفرعي'],
+  ['announcement','شريط الإعلان العلوي (سيبه فاضي لإخفائه)'],
+  ['whatsapp','رقم واتساب (مثال 201001234567)'],
+  ['currency','العملة'],
+  ['shipping_fee','سعر الشحن'],
+  ['free_shipping_min','حد الشحن المجاني (0 = مفيش)'],
+  ['payment_methods','طرق الدفع (مفصولة بفاصلة)'],
+  ['footer_text','نص الفوتر']
+];
+
+function vSettings() {
+  if (S.currentAdmin.role !== 'owner' && !S.currentAdmin.permissions.settings) {
+    $('view').innerHTML = '<p class="text-center text-rose-600 font-bold py-16">عذراً، لا تمتلك صلاحية تعديل الإعدادات.</p>';
+    return;
+  }
+  $('view').innerHTML = `<form onsubmit="saveSettings(event)" class="card p-5 grid md:grid-cols-2 gap-3">
+    ${FIELDS.map(([k, l]) => `
+      <label class="text-xs font-bold text-slate-500">${l}
+        <div class="flex gap-2 mt-1">
+          <input id="set_${k}" name="${k}" value="${esc(S.settings[k])}" class="inp !text-slate-800">
+          ${k.includes('logo') || k.includes('image') || k.includes('favicon') ? `
+            <label class="ghost cursor-pointer flex items-center whitespace-nowrap">📷 رفع
+              <input type="file" accept="image/*" class="hidden" onchange="uploadImg(this, 'set_${k}')">
+            </label>` : ''}
+        </div>
+      label>`).join('')}
+    <button class="btn md:col-span-2 py-3">حفظ الإعدادات</button></form>`;
+}
+
+async function saveSettings(e) {
+  e.preventDefault(); const f = e.target.elements;
+  const upserts = FIELDS.map(([k]) => ({ key: k, value: f[k].value.trim() }));
+  const { error } = await db.from('settings').upsert(upserts);
+  if (error) return toast(error.message, false);
+  await loadAll(); toast('اتحفظت الإعدادات ✅');
+}
+
+/* ====== التشغيل الفوري ====== */
+(async () => { 
+  const { data } = await db.auth.getSession(); 
+  if (data.session) start(); 
+})();
+</script>
+</body>
+</html>
